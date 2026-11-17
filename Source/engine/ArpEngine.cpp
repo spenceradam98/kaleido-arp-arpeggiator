@@ -96,7 +96,7 @@ void ArpEngine::reset()
     running = false;
     seqDirty = true;
     seqPos = 0; repeatCount = 0;
-    nextK = 0; stepCounter = 0;
+    nextK = 0; stepCounter = 0; slotStart = 0; curSlot = 0;
     lastBlockEnd = -1.0;
     hostMode = false;
     lastStepLen = 0.0;
@@ -139,9 +139,9 @@ void ArpEngine::rebuildSequence()
     pool.reserve (256);
     for (auto& h : held)
     {
-        if (settings.chordMemory && ! pattern.chordMemory.empty())
+        if (settings.chordMemory && ! cur().chordMemory.empty())
         {
-            for (int iv : pattern.chordMemory)
+            for (int iv : cur().chordMemory)
                 pool.push_back ({ h.pitch + iv, h.velocity, h.order * 64 + (iv & 63) });
         }
         else
@@ -339,12 +339,34 @@ void ArpEngine::scheduleNote (int pitch, int velocity, int channel, double onBea
 
 void ArpEngine::fireStep (double beat, double stepLen)
 {
-    const int s = (int) (stepCounter % 1000000);
+    // Pattern slots: either the selected slot, or a chain A..N that moves on after each slot
+    // has played its rhythm lane `chainRepeats` times.
+    const int chain = std::clamp (settings.chainLength, 1, kNumSlots);
+    if (chain <= 1)
+    {
+        const int want = std::clamp (settings.activeSlot, 0, kNumSlots - 1);
+        if (want != curSlot) { curSlot = want; seqDirty = true; }
+    }
+    else
+    {
+        if (curSlot >= chain) { curSlot = 0; slotStart = stepCounter; seqDirty = true; }
+        const auto& rl = cur().lane (Lane::Rhythm);
+        const long long cycle = (long long) std::max (1, rl.length) * std::max (1, rl.divide) * std::clamp (settings.chainRepeats, 1, 8);
+        if (stepCounter - slotStart >= cycle)
+        {
+            curSlot = (curSlot + 1) % chain;
+            slotStart = stepCounter;
+            seqDirty = true;
+        }
+    }
+    uiSlot = curSlot;
+
+    const int s = (int) ((stepCounter - slotStart) % 1000000);
     uiStepCounter = s;
     ++stepCounter;
 
-    const int rhythm = pattern.value (Lane::Rhythm, s);
-    const double gateFrac = std::clamp (pattern.value (Lane::Gate, s) / 100.0 * settings.gateScale, 0.02, 4.0);
+    const int rhythm = cur().value (Lane::Rhythm, s);
+    const double gateFrac = std::clamp (cur().value (Lane::Gate, s) / 100.0 * settings.gateScale, 0.02, 4.0);
 
     if (rhythm == kTie)
     {
@@ -357,7 +379,7 @@ void ArpEngine::fireStep (double beat, double stepLen)
         return;
     }
 
-    if (rhythm == kRest || (int) (rng() % 100u) >= pattern.value (Lane::Probability, s))
+    if (rhythm == kRest || (int) (rng() % 100u) >= cur().value (Lane::Probability, s))
     {
         if (settings.advanceOnRest) { Group skip; nextGroup (skip); }
         return;
@@ -366,14 +388,14 @@ void ArpEngine::fireStep (double beat, double stepLen)
     Group g;
     if (! nextGroup (g)) return;
 
-    const int oct = pattern.value (Lane::Octave, s);
-    const int semi = pattern.value (Lane::Semitone, s);
-    const int ratchets = std::clamp (pattern.value (Lane::Ratchet, s), 1, 8);
-    const int laneVel = pattern.value (Lane::Velocity, s);
+    const int oct = cur().value (Lane::Octave, s);
+    const int semi = cur().value (Lane::Semitone, s);
+    const int ratchets = std::clamp (cur().value (Lane::Ratchet, s), 1, 8);
+    const int laneVel = cur().value (Lane::Velocity, s);
     const double sub = stepLen / ratchets;
     const double len = ratchets > 1 ? sub * std::min (gateFrac, 0.9) : stepLen * gateFrac;
     // If the next step is a tie, keep the last hit sounding until that step takes it over.
-    const bool nextIsTie = pattern.value (Lane::Rhythm, s + 1) == kTie;
+    const bool nextIsTie = cur().value (Lane::Rhythm, s + 1) == kTie;
     const double beatsPerSecond = currentBpm / 60.0;
     const bool strum = settings.mode == ArpMode::StrumUp || settings.mode == ArpMode::StrumDown;
     const int channel = outChannelFor (lastInputChannel);
@@ -456,7 +478,8 @@ void ArpEngine::handleInput (const MidiEvent& e, double beat, std::vector<MidiEv
             lastStepLen = L;
             if (settings.retrigger)
             {
-                seqPos = 0; repeatCount = 0; stepCounter = 0;
+                seqPos = 0; repeatCount = 0; stepCounter = 0; slotStart = 0;
+                if (settings.chainLength > 1) curSlot = 0;
                 shuffleOrder.clear();
             }
             if (hostMode)
@@ -566,7 +589,7 @@ void ArpEngine::process (const std::vector<MidiEvent>& in, std::vector<MidiEvent
 
     const int seqKey = (int) settings.mode * 1000 + settings.octaves * 100 + (int) settings.octaveMode * 10 + (settings.chordMemory ? 1 : 0);
     if (seqKey != lastSeqKey) { seqDirty = true; lastSeqKey = seqKey; }
-    if (! (pattern.chordMemory == lastChordMemory)) { seqDirty = true; lastChordMemory = pattern.chordMemory; }
+    if (! (cur().chordMemory == lastChordMemory)) { seqDirty = true; lastChordMemory = cur().chordMemory; }
 
     // Latch switched off with no keys down: release the latched chord.
     if (! settings.latch && physicallyDown.empty() && ! held.empty())

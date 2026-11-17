@@ -84,11 +84,21 @@ std::string toText (const Preset& p)
     o << "syncToHost=" << s.syncToHost << "\n";
     o << "internalBpm=" << s.internalBpm << "\n";
     o << "seed=" << s.seed << "\n";
-    o << "chord=" << joinInts (p.pattern.chordMemory.data(), (int) p.pattern.chordMemory.size()) << "\n";
-    for (int i = 0; i < kNumLanes; ++i)
+    o << "slot=" << s.activeSlot << "\n";
+    o << "chain=" << s.chainLength << "\n";
+    o << "chainRepeats=" << s.chainRepeats << "\n";
+    for (int slot = 0; slot < kNumSlots; ++slot)
     {
-        const auto& ld = p.pattern.lanes[(size_t) i];
-        o << "lane." << laneSpec ((Lane) i).name << "=" << ld.length << ":" << joinInts (ld.values.data(), kMaxSteps) << "\n";
+        const auto& pat = p.slots[(size_t) slot];
+        if (slot > 0 && pat == p.slots[0]) continue;      // identical slots are implied
+        const std::string pre = slot == 0 ? "" : std::string (1, (char) ('A' + slot)) + ".";
+        o << pre << "chord=" << joinInts (pat.chordMemory.data(), (int) pat.chordMemory.size()) << "\n";
+        for (int i = 0; i < kNumLanes; ++i)
+        {
+            const auto& ld = pat.lanes[(size_t) i];
+            o << pre << "lane." << laneSpec ((Lane) i).name << "=" << ld.length << ":" << joinInts (ld.values.data(), kMaxSteps) << "\n";
+            if (ld.divide != 1) o << pre << "div." << laneSpec ((Lane) i).name << "=" << ld.divide << "\n";
+        }
     }
     return o.str();
 }
@@ -98,6 +108,7 @@ bool fromText (const std::string& text, Preset& out)
     Preset p;
     auto& s = p.settings;
     bool sawHeader = false;
+    bool slotSeen[kNumSlots] = { true, false, false, false };
     std::istringstream in (text);
     std::string line;
     while (std::getline (in, line))
@@ -147,28 +158,48 @@ bool fromText (const std::string& text, Preset& out)
         else if (k == "syncToHost") s.syncToHost = b();
         else if (k == "internalBpm") s.internalBpm = std::clamp (f(), 20.0f, 400.0f);
         else if (k == "seed") { try { s.seed = (uint32_t) std::stoul (v); } catch (...) {} }
-        else if (k == "chord")
+        else if (k == "slot") s.activeSlot = std::clamp (i(), 0, kNumSlots - 1);
+        else if (k == "chain") s.chainLength = std::clamp (i(), 1, kNumSlots);
+        else if (k == "chainRepeats") s.chainRepeats = std::clamp (i(), 1, 8);
+        else
         {
-            p.pattern.chordMemory = splitInts (v);
-            if (p.pattern.chordMemory.size() > 12) p.pattern.chordMemory.resize (12);
-        }
-        else if (k.rfind ("lane.", 0) == 0)
-        {
-            const std::string laneName = k.substr (5);
-            for (int li = 0; li < kNumLanes; ++li)
+            // Pattern keys, optionally prefixed with a slot letter: "B.lane.Rhythm=..."
+            int slot = 0;
+            std::string key = k;
+            if (key.size() > 2 && key[1] == '.' && key[0] >= 'B' && key[0] < 'A' + kNumSlots)
             {
-                if (laneName != laneSpec ((Lane) li).name) continue;
-                const auto colon = v.find (':');
-                if (colon == std::string::npos) break;
-                auto& ld = p.pattern.lanes[(size_t) li];
-                try { ld.length = std::clamp (std::stoi (v.substr (0, colon)), 1, kMaxSteps); } catch (...) {}
-                const auto vals = splitInts (v.substr (colon + 1));
-                const auto& spec = laneSpec ((Lane) li);
-                for (size_t n = 0; n < vals.size() && n < (size_t) kMaxSteps; ++n)
-                    ld.values[n] = std::clamp (vals[n], spec.minValue, spec.maxValue);
+                slot = key[0] - 'A';
+                key = key.substr (2);
+                if (! slotSeen[slot]) { slotSeen[slot] = true; p.slots[(size_t) slot] = Pattern(); }
+            }
+            auto& pat = p.slots[(size_t) slot];
+            if (key == "chord")
+            {
+                pat.chordMemory = splitInts (v);
+                if (pat.chordMemory.size() > 12) pat.chordMemory.resize (12);
+            }
+            else if (key.rfind ("lane.", 0) == 0 || key.rfind ("div.", 0) == 0)
+            {
+                const bool isDiv = key[0] == 'd';
+                const std::string laneName = key.substr (isDiv ? 4 : 5);
+                for (int li = 0; li < kNumLanes; ++li)
+                {
+                    if (laneName != laneSpec ((Lane) li).name) continue;
+                    auto& ld = pat.lanes[(size_t) li];
+                    if (isDiv) { ld.divide = std::clamp (i(), 1, 8); break; }
+                    const auto colon = v.find (':');
+                    if (colon == std::string::npos) break;
+                    try { ld.length = std::clamp (std::stoi (v.substr (0, colon)), 1, kMaxSteps); } catch (...) {}
+                    const auto vals = splitInts (v.substr (colon + 1));
+                    const auto& spec = laneSpec ((Lane) li);
+                    for (size_t n = 0; n < vals.size() && n < (size_t) kMaxSteps; ++n)
+                        ld.values[n] = std::clamp (vals[n], spec.minValue, spec.maxValue);
+                }
             }
         }
     }
+    for (int slot = 1; slot < kNumSlots; ++slot)
+        if (! slotSeen[slot]) p.slots[(size_t) slot] = p.slots[0];
     if (! sawHeader) return false;
     out = p;
     return true;
@@ -221,7 +252,8 @@ namespace
             Preset p;
             p.name = name;
             p.category = cat;
-            fn (p.settings, p.pattern);
+            fn (p.settings, p.slots[0]);
+            for (int slot = 1; slot < kNumSlots; ++slot) p.slots[(size_t) slot] = p.slots[0];
             list.push_back (p);
         };
         auto vel = [] (Pattern& p, std::vector<int> v) { setLane (p, Lane::Velocity, v); };
@@ -581,6 +613,42 @@ namespace
             prob (p, { 90, 30, 60, 20, 80, 40, 50, 25, 95, 30, 55, 20, 75, 45, 35, 20 });
             s.humaniseMs = 6; s.humaniseVel = 18;
         });
+
+        // --- Pattern chains and lane speeds (use slots B-D) --------------------------------
+        {
+            Preset p; p.name = "Four Bar Journey"; p.category = "Chains";
+            auto& s = p.settings; s.mode = ArpMode::Up; s.octaves = 2; s.chainLength = 4; s.chainRepeats = 1;
+            s.velSource = VelocitySource::Mix;
+            setRhythm (p.slots[0], "x.xxx.xxx.xxx.xx");
+            setRhythm (p.slots[1], "x..x..x..x..x.x.");
+            setLane (p.slots[1], Lane::Octave, { 0, 0, 1 });
+            gen::euclid (p.slots[2], 7, 16, 0);
+            setLane (p.slots[2], Lane::Ratchet, { 1, 1, 1, 2 });
+            setRhythm (p.slots[3], "xxxxxxxxxxxxxxxx");
+            setLane (p.slots[3], Lane::Gate, { 30, 50, 70, 90, 110 });
+            setLane (p.slots[3], Lane::Octave, { 0, 1, 2, 1 });
+            list.push_back (p);
+        }
+        {
+            Preset p; p.name = "Call And Answer"; p.category = "Chains";
+            auto& s = p.settings; s.mode = ArpMode::UpDown; s.chainLength = 2; s.chainRepeats = 2;
+            s.scaleIndex = scaleIdx ("Minor Pentatonic"); s.degreeMode = true;
+            setRhythm (p.slots[0], "x.x.xx..");
+            setLane (p.slots[0], Lane::Semitone, { 0, 1, 2, 1 });
+            setRhythm (p.slots[1], "..x.x.xx");
+            setLane (p.slots[1], Lane::Semitone, { 3, 2, 1, 0 });
+            p.slots[2] = p.slots[0]; p.slots[3] = p.slots[1];
+            list.push_back (p);
+        }
+        {
+            Preset p; p.name = "Slow Lanes"; p.category = "Chains";
+            auto& s = p.settings; s.mode = ArpMode::Up; s.octaves = 2; s.velSource = VelocitySource::Lane;
+            setLane (p.slots[0], Lane::Octave, { 0, 1, 0, -1 }); p.slots[0].lane (Lane::Octave).divide = 4;
+            setLane (p.slots[0], Lane::Velocity, { 120, 70, 90, 70 });
+            setLane (p.slots[0], Lane::Gate, { 30, 60, 90, 120 }); p.slots[0].lane (Lane::Gate).divide = 3;
+            for (int sl = 1; sl < kNumSlots; ++sl) p.slots[(size_t) sl] = p.slots[0];
+            list.push_back (p);
+        }
 
         return list;
     }

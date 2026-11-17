@@ -38,8 +38,11 @@ public:
     // ---- used by the editor (message thread) ----
     juce::AudioProcessorValueTreeState params;
 
-    kal::Pattern getPattern() const;
-    void setPattern (const kal::Pattern& p);
+    kal::Pattern getPattern (int slot) const;
+    void setPattern (int slot, const kal::Pattern& p);
+    kal::Bank getBank() const;
+    void setBank (const kal::Bank& b);
+    std::atomic<int> editSlot { 0 };            // slot shown in the editor (chord Learn writes here)
     kal::Settings currentSettings() const;
     void loadPreset (const kal::Preset& p);
     kal::Preset makePreset (const juce::String& name, const juce::String& category) const;
@@ -69,7 +72,7 @@ private:
     kal::PreviewSynth preview;
 
     mutable juce::SpinLock patternLock;
-    kal::Pattern sharedPattern;
+    kal::Bank sharedBank;
     std::atomic<bool> patternDirty { true };
     std::atomic<bool> learnRequested { false };
 

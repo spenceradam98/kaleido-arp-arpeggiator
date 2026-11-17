@@ -57,6 +57,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout KaleidoProcessor::createLayo
     l.add (std::make_unique<AudioParameterChoice> (id ("outChannel"), "Output Channel", chans, 0));
     l.add (std::make_unique<AudioParameterBool> (id ("sync"), "Host Sync", true));
     l.add (std::make_unique<AudioParameterFloat> (id ("bpm"), "Internal BPM", NormalisableRange<float> (20.0f, 300.0f, 0.1f), 120.0f));
+    l.add (std::make_unique<AudioParameterChoice> (id ("slot"), "Pattern Slot", StringArray { "A", "B", "C", "D" }, 0));
+    l.add (std::make_unique<AudioParameterChoice> (id ("chain"), "Chain", StringArray { "Off", "A-B", "A-C", "A-D" }, 0));
+    l.add (std::make_unique<AudioParameterInt> (id ("chainRepeats"), "Chain Repeats", 1, 8, 1));
     l.add (std::make_unique<AudioParameterBool> (id ("preview"), "Preview Synth", false));
     l.add (std::make_unique<AudioParameterFloat> (id ("previewLevel"), "Preview Level", NormalisableRange<float> (0.0f, 1.0f), 0.7f, fAttr (pct)));
     return l;
@@ -144,6 +147,9 @@ Settings KaleidoProcessor::currentSettings() const
     s.syncToHost = p ("sync") > 0.5f;
     s.internalBpm = p ("bpm");
     s.seed = seed.load();
+    s.activeSlot = (int) p ("slot");
+    s.chainLength = (int) p ("chain") + 1;
+    s.chainRepeats = (int) p ("chainRepeats");
     return s;
 }
 
@@ -158,7 +164,7 @@ void KaleidoProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
         const juce::SpinLock::ScopedTryLockType lock (patternLock);
         if (lock.isLocked())
         {
-            arp.setPattern (sharedPattern);
+            arp.setBank (sharedBank);
             patternDirty = false;
         }
     }
@@ -170,8 +176,8 @@ void KaleidoProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
         if (! shape.empty())
         {
             const juce::SpinLock::ScopedLockType lock (patternLock);
-            sharedPattern.chordMemory = shape;
-            arp.setPattern (sharedPattern);
+            sharedBank[(size_t) juce::jlimit (0, kNumSlots - 1, editSlot.load())].chordMemory = shape;
+            arp.setBank (sharedBank);
             chordLearned = true;
             ++patternVersion;
         }
@@ -242,17 +248,33 @@ void KaleidoProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
 
 // ---- pattern / presets -----------------------------------------------------------------------
 
-kal::Pattern KaleidoProcessor::getPattern() const
+kal::Pattern KaleidoProcessor::getPattern (int slot) const
 {
     const juce::SpinLock::ScopedLockType lock (patternLock);
-    return sharedPattern;
+    return sharedBank[(size_t) juce::jlimit (0, kNumSlots - 1, slot)];
 }
 
-void KaleidoProcessor::setPattern (const kal::Pattern& np)
+kal::Bank KaleidoProcessor::getBank() const
+{
+    const juce::SpinLock::ScopedLockType lock (patternLock);
+    return sharedBank;
+}
+
+void KaleidoProcessor::setPattern (int slot, const kal::Pattern& np)
 {
     {
         const juce::SpinLock::ScopedLockType lock (patternLock);
-        sharedPattern = np;
+        sharedBank[(size_t) juce::jlimit (0, kNumSlots - 1, slot)] = np;
+    }
+    patternDirty = true;
+    ++patternVersion;
+}
+
+void KaleidoProcessor::setBank (const kal::Bank& b)
+{
+    {
+        const juce::SpinLock::ScopedLockType lock (patternLock);
+        sharedBank = b;
     }
     patternDirty = true;
     ++patternVersion;
@@ -283,8 +305,11 @@ void KaleidoProcessor::loadPreset (const kal::Preset& pr)
     setParam ("rangeLow", (float) s.rangeLow);
     setParam ("rangeHigh", (float) s.rangeHigh);
     // Output channel, host sync, tempo, on/off and preview are setup choices, not part of a sound.
+    setParam ("slot", (float) s.activeSlot);
+    setParam ("chain", (float) (s.chainLength - 1));
+    setParam ("chainRepeats", (float) s.chainRepeats);
     seed = s.seed;
-    setPattern (pr.pattern);
+    setBank (pr.slots);
     presetName = pr.name;
 }
 
@@ -294,7 +319,7 @@ kal::Preset KaleidoProcessor::makePreset (const juce::String& name, const juce::
     pr.name = name.toStdString();
     pr.category = category.toStdString();
     pr.settings = currentSettings();
-    pr.pattern = getPattern();
+    pr.slots = getBank();
     return pr;
 }
 
@@ -378,7 +403,7 @@ void KaleidoProcessor::setStateInformation (const void* data, int sizeInBytes)
     if (havePattern)
     {
         seed = pr.settings.seed;
-        setPattern (pr.pattern);
+        setBank (pr.slots);
     }
 }
 

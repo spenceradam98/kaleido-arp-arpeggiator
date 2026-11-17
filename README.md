@@ -1,8 +1,9 @@
-# Kaleido (working name)
+# Kaleido
 
 A versatile MIDI arpeggiator and step-pattern generator (VST3, AU, AU MIDI FX and standalone).
-18 modes, seven step lanes with independent lengths, probability, ratchets, scales, chord memory,
-Euclidean, random and Markov generators, 86 factory presets and 7 themes.
+18 modes, seven step lanes with independent lengths and speeds, four chainable pattern slots,
+probability, ratchets, scales, chord memory, Euclidean, random and Markov generators,
+89 factory presets and 7 themes.
 See `docs/DESIGN.md` for the plan and feature list.
 
 ![screenshot](docs/screenshot.png)

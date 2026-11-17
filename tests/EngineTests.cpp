@@ -273,10 +273,10 @@ int main()
             Preset back;
             CHECK (fromText (toText (fp), back));
             CHECK (back.name == fp.name);
-            CHECK (back.pattern == fp.pattern);
+            for (int sl = 0; sl < kNumSlots; ++sl) CHECK (back.slots[(size_t) sl] == fp.slots[(size_t) sl]);
             CHECK (toText (back) == toText (fp));
 
-            Rig r (fp.settings, fp.pattern);
+            Rig r (fp.settings, fp.slots[0]);
             r.noteOn (48); r.noteOn (55); r.noteOn (60); r.noteOn (63);
             r.run (2.0);
             r.noteOff (48); r.noteOff (55); r.noteOff (60); r.noteOff (63);
@@ -286,6 +286,36 @@ int main()
             if (r.ons().empty()) std::printf ("  silent: %s\n", fp.name.c_str());
             CHECK (! r.ons().empty());
         }
+    });
+
+    test ("per-lane speed divider", []
+    {
+        Pattern p; setLane (p, Lane::Semitone, { 0, 7 }); p.lane (Lane::Semitone).divide = 2;
+        Rig r ({}, p); r.noteOn (60); r.run (0.6);
+        CHECK ((r.onPitches (4) == std::vector<int> { 60, 60, 67, 67 }));
+    });
+
+    test ("pattern slots: select and chain", []
+    {
+        Bank b;
+        for (int i = 0; i < kNumSlots; ++i) { b[(size_t) i] = Pattern(); setLane (b[(size_t) i], Lane::Semitone, { i }); setRhythm (b[(size_t) i], "xx"); }
+        Settings s; s.activeSlot = 2;
+        { Rig r (s); r.arp.setBank (b); r.noteOn (60); r.run (0.3); CHECK (r.onPitches (1)[0] == 62); }
+        s.activeSlot = 0; s.chainLength = 3; s.chainRepeats = 1;
+        {
+            Rig r (s); r.arp.setBank (b); r.noteOn (60); r.run (1.0);
+            CHECK ((r.onPitches (8) == std::vector<int> { 60, 60, 61, 61, 62, 62, 60, 60 }));
+        }
+    });
+
+    test ("slots and dividers survive the text format", []
+    {
+        Preset pr; pr.settings.chainLength = 4; pr.settings.chainRepeats = 3; pr.settings.activeSlot = 1;
+        setRhythm (pr.slots[1], "x.x"); pr.slots[3].lane (Lane::Gate).divide = 4; pr.slots[2].chordMemory = { 0, 4, 7 };
+        Preset back;
+        CHECK (fromText (toText (pr), back));
+        for (int sl = 0; sl < kNumSlots; ++sl) CHECK (back.slots[(size_t) sl] == pr.slots[(size_t) sl]);
+        CHECK (back.settings.chainLength == 4 && back.settings.chainRepeats == 3 && back.settings.activeSlot == 1);
     });
 
     std::printf ("\n%d checks, %d failures\n", checks, failures);

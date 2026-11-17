@@ -101,6 +101,7 @@ void Pattern::resetLane (Lane l)
 {
     auto& ld = lane (l);
     ld.length = 16;
+    ld.divide = 1;
     ld.values.fill (laneSpec (l).defaultValue);
 }
 
@@ -108,13 +109,15 @@ int Pattern::value (Lane l, int step) const
 {
     const auto& ld = lane (l);
     const int len = ld.length < 1 ? 1 : ld.length;
+    const int div = ld.divide < 1 ? 1 : ld.divide;
+    step = step >= 0 ? step / div : -((-step + div - 1) / div);
     return ld.values[(size_t) (((step % len) + len) % len)];
 }
 
 bool Pattern::operator== (const Pattern& o) const
 {
     for (int i = 0; i < kNumLanes; ++i)
-        if (lanes[(size_t) i].length != o.lanes[(size_t) i].length || lanes[(size_t) i].values != o.lanes[(size_t) i].values)
+        if (lanes[(size_t) i].length != o.lanes[(size_t) i].length || lanes[(size_t) i].divide != o.lanes[(size_t) i].divide || lanes[(size_t) i].values != o.lanes[(size_t) i].values)
             return false;
     return chordMemory == o.chordMemory;
 }

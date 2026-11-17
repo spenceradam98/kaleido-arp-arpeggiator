@@ -23,7 +23,7 @@ namespace
             case Lane::Gate: case Lane::Probability: return juce::String (v) + "%";
             case Lane::Octave: case Lane::Semitone: return (v > 0 ? "+" : "") + juce::String (v);
             case Lane::Ratchet: return "x" + juce::String (v);
-            default: return juce::String (v);
+            case Lane::Velocity: case Lane::Count: default: return juce::String (v);
         }
     }
 
@@ -59,10 +59,10 @@ void LaneOverview::paint (juce::Graphics& g)
 
         g.setColour (sel ? t.accent : t.dim);
         g.setFont (juce::Font (juce::FontOptions (11.0f, sel ? juce::Font::bold : juce::Font::plain)));
-        g.drawText (juce::String (laneSpec (lane).name) + " " + juce::String (ld.length), juce::Rectangle<float> (0, y, labelW - 4, rowH),
+        g.drawText (juce::String (laneSpec (lane).name) + " " + juce::String (ld.length) + (ld.divide > 1 ? "/" + juce::String (ld.divide) : juce::String()), juce::Rectangle<float> (0, y, labelW - 4, rowH),
                     juce::Justification::centredLeft);
 
-        const int pos = editor.playStep >= 0 ? editor.playStep % juce::jmax (1, ld.length) : -1;
+        const int pos = editor.lanePos (lane);
         for (int s = 0; s < kMaxSteps; ++s)
         {
             auto cell = juce::Rectangle<float> (labelW + s * cellW, y, cellW, rowH).reduced (1.0f, 1.5f);
@@ -123,7 +123,7 @@ void LaneEditor::paint (juce::Graphics& g)
     g.setColour (t.bg.withAlpha (0.6f));
     g.fillRoundedRectangle (b, 6.0f);
 
-    const int pos = editor.playStep >= 0 ? editor.playStep % juce::jmax (1, ld.length) : -1;
+    const int pos = editor.lanePos (lane);
     const float zeroY = bipolar (lane) ? b.getCentreY() : b.getBottom();
 
     for (int s = 0; s < kMaxSteps; ++s)
@@ -290,7 +290,8 @@ KaleidoEditor::KaleidoEditor (KaleidoProcessor& p)
     : AudioProcessorEditor (p), proc (p)
 {
     setLookAndFeel (&lnf);
-    pat = proc.getPattern();
+    editSlot = juce::jlimit (0, kNumSlots - 1, proc.editSlot.load());
+    pat = proc.getPattern (editSlot);
 
     // ---- header ----
     addAndMakeVisible (presetBox);
@@ -365,6 +366,35 @@ KaleidoEditor::KaleidoEditor (KaleidoProcessor& p)
     lengthLabel.setText ("Length", juce::dontSendNotification);
     lengthLabel.setFont (juce::Font (juce::FontOptions (11.5f)));
     addAndMakeVisible (lengthLabel);
+    divSlider.setRange (1, 8, 1);
+    divSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 34, 18);
+    divSlider.onDragStart = [this] { beginEdit(); };
+    divSlider.onValueChange = [this]
+    {
+        pat.lane (selected).divide = (int) divSlider.getValue();
+        commit();
+    };
+    addAndMakeVisible (divSlider);
+    divLabel.setText ("Speed /", juce::dontSendNotification);
+    divLabel.setFont (juce::Font (juce::FontOptions (11.5f)));
+    addAndMakeVisible (divLabel);
+
+    // ---- pattern slots ----
+    for (int i = 0; i < kNumSlots; ++i)
+    {
+        auto* b = slotButtons.add (new juce::TextButton (juce::String::charToString ((juce::juce_wchar) ('A' + i))));
+        b->onClick = [this, i] { selectSlot (i); };
+        addAndMakeVisible (b);
+    }
+    copyBtn.onClick = [this] { clipboard = pat; haveClipboard = true; statusLabel.setText ("Copied slot " + juce::String::charToString ((juce::juce_wchar) ('A' + editSlot)), juce::dontSendNotification); };
+    pasteBtn.onClick = [this] { if (haveClipboard) tool ([this] (Pattern& q) { q = clipboard; }); };
+    addAndMakeVisible (copyBtn);
+    addAndMakeVisible (pasteBtn);
+    choice ("chain", "Chain");
+    knob ("chainRepeats", "Repeats");
+    knobs["chainRepeats"]->slider.setSliderStyle (juce::Slider::LinearHorizontal);
+    knobs["chainRepeats"]->slider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 24, 18);
+    knobs["chainRepeats"]->label.setJustificationType (juce::Justification::centredLeft);
 
     toolRow = {
         &button ("Rotate <", [this] { tool ([this] (Pattern& q) { gen::rotate (q, selected, -1); }); }),
@@ -434,6 +464,7 @@ void KaleidoEditor::applyTheme (int index)
     for (auto& [id, c] : choices) c->label.setColour (juce::Label::textColourId, theme().dim);
     for (auto& s : genSliders) s->label.setColour (juce::Label::textColourId, theme().dim);
     lengthLabel.setColour (juce::Label::textColourId, theme().dim);
+    divLabel.setColour (juce::Label::textColourId, theme().dim);
     statusLabel.setColour (juce::Label::textColourId, theme().dim);
     chordLabel.setColour (juce::Label::textColourId, theme().text);
     sendLookAndFeelChange();
@@ -445,8 +476,31 @@ void KaleidoEditor::selectLane (Lane l)
     selected = l;
     for (int i = 0; i < laneTabs.size(); ++i) laneTabs[i]->setToggleState (i == (int) l, juce::dontSendNotification);
     lengthSlider.setValue (pat.lane (l).length, juce::dontSendNotification);
+    divSlider.setValue (pat.lane (l).divide, juce::dontSendNotification);
+    for (int i = 0; i < slotButtons.size(); ++i) slotButtons[i]->setToggleState (i == editSlot, juce::dontSendNotification);
     overview.repaint();
     laneEditor.repaint();
+}
+
+int KaleidoEditor::lanePos (Lane l) const
+{
+    if (playStep < 0 || playSlot != editSlot) return -1;
+    const auto& ld = pat.lane (l);
+    return (playStep / juce::jmax (1, ld.divide)) % juce::jmax (1, ld.length);
+}
+
+void KaleidoEditor::selectSlot (int slot)
+{
+    editSlot = juce::jlimit (0, kNumSlots - 1, slot);
+    proc.editSlot = editSlot;
+    // Outside a chain, the slot you edit is the slot you hear.
+    if (auto* prm = proc.params.getParameter ("slot"))
+        if (proc.params.getRawParameterValue ("chain")->load() < 0.5f)
+            prm->setValueNotifyingHost (prm->convertTo0to1 ((float) editSlot));
+    pat = proc.getPattern (editSlot);
+    history.clear();
+    selectLane (selected);
+    refreshChordLabel();
 }
 
 void KaleidoEditor::beginEdit()
@@ -457,7 +511,7 @@ void KaleidoEditor::beginEdit()
 
 void KaleidoEditor::commit()
 {
-    proc.setPattern (pat);
+    proc.setPattern (editSlot, pat);
     proc.presetName = proc.presetName.endsWith ("*") ? proc.presetName : proc.presetName + " *";
     overview.repaint();
     laneEditor.repaint();
@@ -526,7 +580,7 @@ void KaleidoEditor::presetChosen()
     }
     else
         proc.setCurrentProgram (id - 1);
-    pat = proc.getPattern();
+    pat = proc.getPattern (editSlot);
     selectLane (selected);
     refreshChordLabel();
     statusLabel.setText ("Loaded " + proc.presetName, juce::dontSendNotification);
@@ -563,12 +617,11 @@ void KaleidoEditor::savePresetDialog()
 
 void KaleidoEditor::timerCallback()
 {
-    static int lastVersion = -1;
     const int v = proc.patternVersion.load();
     if (v != lastVersion)
     {
         lastVersion = v;
-        const auto fresh = proc.getPattern();
+        const auto fresh = proc.getPattern (editSlot);
         if (! (fresh == pat)) { pat = fresh; selectLane (selected); }
         refreshChordLabel();
     }
@@ -577,7 +630,13 @@ void KaleidoEditor::timerCallback()
 
     const int held = proc.engine().uiHeldCount.load();
     const int step = held > 0 ? proc.engine().uiStepCounter.load() : -1;
-    if (step != playStep) { playStep = step; overview.repaint(); laneEditor.repaint(); }
+    const int slotNow = proc.engine().uiSlot.load();
+    if (step != playStep || slotNow != playSlot)
+    {
+        if (slotNow != playSlot) repaint (slotRow.transformedBy (juce::AffineTransform::scale (getWidth() / (float) kWidth)));
+        playStep = step; playSlot = slotNow;
+        overview.repaint(); laneEditor.repaint();
+    }
 
     const int act = proc.outputActivity.load();
     if (act != lastActivity) { lastActivity = act; activityGlow = 1.0f; }
@@ -698,19 +757,35 @@ void KaleidoEditor::resized()
     laneArea = right.removeFromTop (452);
     {
         auto r = laneArea.reduced (12, 8);
-        r.removeFromTop (18);
+        slotRow = r.removeFromTop (24).withTrimmedLeft (96);
+        {
+            auto sr = slotRow;
+            for (auto* b : slotButtons) { b->setBounds (sr.removeFromLeft (30)); sr.removeFromLeft (3); }
+            sr.removeFromLeft (8);
+            copyBtn.setBounds (sr.removeFromLeft (52)); sr.removeFromLeft (3);
+            pasteBtn.setBounds (sr.removeFromLeft (52)); sr.removeFromLeft (14);
+            auto& ch = *choices["chain"];
+            ch.label.setBounds (sr.removeFromLeft (40)); ch.box.setBounds (sr.removeFromLeft (80));
+            sr.removeFromLeft (10);
+            auto& rp = *knobs["chainRepeats"];
+            rp.label.setBounds (sr.removeFromLeft (56)); rp.slider.setBounds (sr);
+        }
+        r.removeFromTop (4);
         auto tabs = r.removeFromTop (26);
         const int tw = tabs.getWidth() / kNumLanes;
         for (auto* t : laneTabs) t->setBounds (tabs.removeFromLeft (tw).reduced (2, 0));
         r.removeFromTop (6);
-        overview.setBounds (r.removeFromTop (112));
+        overview.setBounds (r.removeFromTop (106));
         r.removeFromTop (6);
         auto bottom = r.removeFromBottom (28);
         r.removeFromBottom (4);
         auto lenRow = r.removeFromBottom (24);
         laneEditor.setBounds (r);
         lengthLabel.setBounds (lenRow.removeFromLeft (50));
-        lengthSlider.setBounds (lenRow.removeFromLeft (260));
+        lengthSlider.setBounds (lenRow.removeFromLeft (240));
+        lenRow.removeFromLeft (20);
+        divLabel.setBounds (lenRow.removeFromLeft (56));
+        divSlider.setBounds (lenRow.removeFromLeft (200));
         const int bw = bottom.getWidth() / (int) toolRow.size();
         for (auto* b : toolRow) b->setBounds (bottom.removeFromLeft (bw).reduced (2, 0));
     }
@@ -781,6 +856,13 @@ void KaleidoEditor::paint (juce::Graphics& g)
         sectionFrame (g, pitchArea, t, "Pitch & Feel");
         sectionFrame (g, outArea, t, "Output");
         sectionFrame (g, laneArea, t, "Step Lanes");
+        if (juce::isPositiveAndBelow (playSlot, slotButtons.size()) && playStep >= 0)
+        {
+            // Dot under the slot that is playing.
+            const auto sb = juce::Rectangle<int> (slotRow.getX() + playSlot * 33, slotRow.getBottom() + 1, 30, 3);
+            g.setColour (t.playhead);
+            g.fillRoundedRectangle (sb.toFloat(), 1.5f);
+        }
         sectionFrame (g, genArea, t, "Generate");
     }
 }

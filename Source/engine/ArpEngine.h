@@ -32,9 +32,10 @@ public:
     void reset();                                       // silences everything and forgets held notes
 
     void setSettings (const Settings& s) { settings = s; }
-    void setPattern (const Pattern& p) { pattern = p; }
+    void setPattern (const Pattern& p) { bank.fill (p); }       // same pattern in every slot
+    void setBank (const Bank& b) { bank = b; }
     const Settings& getSettings() const { return settings; }
-    const Pattern& getPattern() const { return pattern; }
+    const Pattern& getPattern() const { return bank[(size_t) curSlot]; }
 
     // Input events must be sorted by sampleOffset. Output is appended to `out`, sorted.
     void process (const std::vector<MidiEvent>& in, std::vector<MidiEvent>& out,
@@ -47,6 +48,7 @@ public:
     std::atomic<int> uiStepCounter { -1 };              // step counter of the last fired step
     std::atomic<int> uiLastNote { -1 };
     std::atomic<int> uiHeldCount { 0 };
+    std::atomic<int> uiSlot { 0 };                      // slot currently playing
 
 private:
     struct Held { int pitch, velocity, channel, order; };
@@ -65,7 +67,10 @@ private:
     int outChannelFor (int inChannel) const;
 
     Settings settings;
-    Pattern pattern;
+    Bank bank;
+    int curSlot = 0;
+    long long slotStart = 0;           // stepCounter value where the current slot began
+    const Pattern& cur() const { return bank[(size_t) curSlot]; }
     double sampleRate = 44100.0;
 
     std::vector<Held> held;            // physically held (or latched) notes

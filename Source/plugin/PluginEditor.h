@@ -49,7 +49,10 @@ public:
     // shared with the lane components
     kal::Pattern pat;
     kal::Lane selected = kal::Lane::Rhythm;
-    int playStep = -1;
+    int playStep = -1;                 // step within the playing slot, -1 when idle
+    int editSlot = 0;
+    int playSlot = 0;
+    int lanePos (kal::Lane l) const;   // playhead position in a lane of the edited slot, or -1
     const kal::Theme& theme() const { return lnf.theme(); }
     void beginEdit();                  // pushes undo state
     void commit();                     // sends the working pattern to the processor
@@ -95,6 +98,7 @@ private:
     void tool (std::function<void (kal::Pattern&)> fn);
     void refreshChordLabel();
     void layoutKnobRow (juce::Rectangle<int> r, std::initializer_list<Knob*> knobs);
+    void selectSlot (int slot);
 
     KaleidoProcessor& proc;
     kal::KaleidoLookAndFeel lnf;
@@ -114,6 +118,14 @@ private:
     juce::OwnedArray<juce::TextButton> laneTabs;
     juce::Slider lengthSlider { juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight };
     juce::Label lengthLabel;
+    juce::Slider divSlider { juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight };
+    juce::Label divLabel;
+    juce::OwnedArray<juce::TextButton> slotButtons;
+    juce::TextButton copyBtn { "Copy" }, pasteBtn { "Paste" };
+    kal::Pattern clipboard;
+    bool haveClipboard = false;
+    juce::Rectangle<int> slotRow;
+    int lastVersion = -1;
 
     LaneOverview overview { *this };
     LaneEditor laneEditor { *this };

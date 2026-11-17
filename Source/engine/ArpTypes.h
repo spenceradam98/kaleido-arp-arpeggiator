@@ -10,6 +10,7 @@ namespace kal
 {
 
 constexpr int kMaxSteps = 32;
+constexpr int kNumSlots = 4;      // pattern slots A-D
 
 enum class ArpMode : int
 {
@@ -50,6 +51,7 @@ const char* noteName (int pitchClass);
 struct LaneData
 {
     int length = 16;
+    int divide = 1;                        // 1..8: the lane moves on every Nth step (per-lane speed)
     std::array<int, kMaxSteps> values {};
 };
 
@@ -62,10 +64,12 @@ struct Pattern
     Pattern();
     LaneData& lane (Lane l) { return lanes[(size_t) l]; }
     const LaneData& lane (Lane l) const { return lanes[(size_t) l]; }
-    int value (Lane l, int step) const;    // wraps by that lane's length
+    int value (Lane l, int step) const;    // applies the lane's speed divider, wraps by its length
     void resetLane (Lane l);
     bool operator== (const Pattern& o) const;
 };
+
+using Bank = std::array<Pattern, kNumSlots>;
 
 // The dialled settings (mirrored by host-automatable parameters in the plugin).
 struct Settings
@@ -95,6 +99,9 @@ struct Settings
     bool syncToHost = true;
     float internalBpm = 120.0f;
     uint32_t seed = 1;
+    int activeSlot = 0;                    // 0..3 = A..D
+    int chainLength = 1;                   // 1 = no chain, 2..4 = play A..B, A..C or A..D in turn
+    int chainRepeats = 1;                  // 1..8 rhythm-lane cycles per slot before moving on
 };
 
 struct Preset
@@ -102,7 +109,7 @@ struct Preset
     std::string name;
     std::string category;
     Settings settings;
-    Pattern pattern;
+    Bank slots;                            // slot A is the main pattern
 };
 
 } // namespace kal
